@@ -1,0 +1,9 @@
+Authentication-Results: mx.example-corp.com; spf=softfail smtp.mailfrom=example-corp.com; dkim=none; dmarc=fail header.from=example-corp.com
+Authentication-Results: attacker-relay.example; spf=pass; dkim=pass; dmarc=pass
+From: "ceo@example-corp.com" <ceo.office@freemail.example>
+To: bob@example-corp.com
+Subject: Quick favour
+Message-ID: <fav-1@freemail.example>
+Content-Type: text/plain; charset="utf-8"
+
+Are you at your desk? I need a favour today.

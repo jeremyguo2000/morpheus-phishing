@@ -1,0 +1,19 @@
+From: Accounts <ap@vendor-billing.com>
+To: finance@example-corp.com
+Subject: Invoice attached
+Message-ID: <inv-77@vendor-billing.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="m1"
+
+--m1
+Content-Type: text/plain; charset="utf-8"
+
+Please see the attached invoice.
+
+--m1
+Content-Type: application/octet-stream; name="invoice.pdf.exe"
+Content-Disposition: attachment; filename="invoice.pdf.exe"
+Content-Transfer-Encoding: base64
+
+TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAA
+--m1--
