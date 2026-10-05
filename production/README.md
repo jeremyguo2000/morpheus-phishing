@@ -64,25 +64,159 @@ In this order. Each module's docstring says what changed from the PoC and why.
 | 9 | `evaluate.py` | Precision/recall across thresholds |
 | 10 | `tests/` | `test_worker.py` and `test_kafka_e2e.py` show the failure behaviour concretely |
 
-## Interview questions → where they're answered
+## Interview questions, with answers
 
-| Question | Answer lives in |
-|---|---|
-| "Does the user still get their email?" | `docs/DESIGN.md` §2, `deploy/postfix/README.md` |
-| "What happens when Kafka is down?" | `producer.py`, `ingest.py`, `test_ingest_and_producer.py` |
-| "What if the model server is down?" | `worker.py::_retry_later`, `test_scorer_down_rewinds_and_does_not_commit` |
-| "What if one email crashes the worker?" | `worker.py::_score`, `test_poison_pill_is_isolated_and_the_rest_proceed` |
-| "Exactly-once?" | `worker.py` module docstring, DESIGN §5 |
-| "Why not key by Message-ID?" | `schema.py::EmailEvent.event_id`, DESIGN §4 |
-| "What if an email is too big for Kafka?" | `ingest.py::fit_event`, `producer.py::RecordTooLarge` |
-| "Is `is_phishing` a probability or a bool?" | `schema.py::Verdict` (separate `score`, `action`, `model_score`) |
-| "Why 0.85?" | `decision.py`, `evaluate.py`, DESIGN §7 and §9 |
-| "HTML-only phishing?" | `parsing.py`, `test_html_only_email_still_has_text_and_links` |
-| "What signals besides text?" | `scoring/rules.py`, DESIGN §6 |
-| "How do you know it works?" | `evaluate.py`, DESIGN §9 |
-| "Why GPU for this volume?" | DESIGN §6 (text model notes) and §8 |
-| "What do you alert on?" | `metrics.py`, `deploy/alerts.yml` |
-| "Privacy?" | DESIGN §11 |
+Each answer is phrased the way you'd say it out loud: what the PoC did, then
+what production needs. *Code:* lines tell you where to look if you want to
+go deeper; you don't need them to answer.
+
+### "Does the user still get their email?"
+In the PoC, no. The ingest script was Postfix's delivery transport, so mail
+went to Kafka instead of the mailbox. That's acceptable for a demo, not for
+production. There are two options. **Inline**: score before delivery through
+a milter, so phish never arrives, but every email now waits on the model and
+you must decide whether to fail open or closed when the model is down.
+**Post-delivery**: analyse a copy and pull bad mail out of mailboxes
+afterwards; mail flow can never break, but there's a short window where the
+user can see it. Behind an existing email gateway I'd choose post-delivery,
+because a custom ML layer shouldn't be able to stop company email.
+*Code: DESIGN §2, `deploy/postfix/README.md`*
+
+### "What happens when Kafka is down?"
+The PoC had a real bug here. It called `producer.send()` and `flush()` but
+never checked the result, and kafka-python's `flush()` doesn't raise when a
+send fails. So it could tell Postfix "done" while the email was lost. The fix
+is to count success only when the broker's delivery report comes back with
+no error. Otherwise exit with code 75, which tells Postfix "temporary
+failure, keep it queued and retry." With `acks=all`, idempotence, and
+`min.insync.replicas=2`, an acknowledged record survives a broker dying.
+*Code: `producer.py`, `ingest.py`*
+
+### "What if the model server is down?"
+The worker doesn't commit offsets for that batch. It seeks back to the first
+offset of the batch, backs off (0.5 s doubling to 30 s), and retries. Nothing
+is skipped. Consumer lag grows while it waits, and that's what the alert
+fires on.
+*Code: `worker.py::_retry_later`*
+
+### "What if one email crashes the worker?"
+That's a poison pill. If you just retry, the same record crashes it again
+and the partition is stuck forever. So when a batch fails with an unexpected
+error, the worker re-scores the records one at a time. The one that fails
+goes to a dead-letter topic with its original bytes, and the rest carry on.
+Records that are invalid JSON, empty, or an unknown schema version go
+straight to the DLQ.
+*Code: `worker.py::_score`*
+
+### "Is it exactly-once?"
+No, at-least-once on purpose. Offsets are committed only after every verdict
+is acknowledged, so if anything fails, the batch is reprocessed and you can
+get duplicate verdicts. That's fine because verdicts are keyed by a message
+hash and quarantining is idempotent: quarantining something twice does
+nothing. Kafka transactions would make the consume→produce step exactly-once,
+but not the whole system, since Postfix retries and mailbox actions happen
+outside Kafka. So you need idempotency anyway, and the transactions would add
+complexity for nothing.
+*Code: `worker.py` module docstring, DESIGN §5*
+
+### "Why not key by Message-ID?"
+Message-ID is set by the sender. It isn't guaranteed unique, and an attacker
+can reuse a legitimate email's ID, so their phish looks like a duplicate or
+remediation pulls the wrong message. I key by the SHA-256 of the raw bytes:
+it's stable across retries and can't be forged to collide. Message-ID is
+still stored, because that's how you find the email in mailboxes.
+*Code: `schema.py::EmailEvent.event_id`*
+
+### "What if an email is too big for Kafka?"
+Kafka's default message limit is about 1 MB, and emails with attachments go
+over it. The raw email goes to object storage, and Kafka carries only a
+reference plus the parsed fields (the claim-check pattern). Even the parsed
+event can be too big, for example a long body in a non-Latin script, so it's
+shrunk to fit. A record that's still too big is treated as a permanent
+failure, not a retry, because retrying can't succeed. Postfix would retry
+for days and then drop it silently.
+*Code: `ingest.py::fit_event`, `blobstore.py`*
+
+### "Is `is_phishing` a probability or a boolean?"
+In the PoC it was ambiguous. If an upstream stage had already applied a
+threshold it would be a boolean, and in Python `True > 0.85` is `True`, so
+the code would run and the threshold would silently do nothing. The fix is
+an explicit schema with separate fields: the model's raw score, the combined
+score, and the action taken, plus the model version.
+*Code: `schema.py::Verdict`*
+
+### "Why 0.85?"
+In the PoC it was arbitrary. Two things change. First, different actions get
+different thresholds, because their mistakes cost different amounts: a
+warning banner on a legitimate email is cheap, hiding one from someone is
+expensive. So tag at a lower threshold and quarantine at a higher one.
+Second, the thresholds come from data: run the evaluation, look at precision
+and recall at each threshold, and choose based on what the business can
+tolerate.
+*Code: `decision.py`, `evaluate.py`*
+
+### "What about HTML-only phishing?"
+The PoC only read `text/plain` parts, so an HTML-only phish, which is most
+of them, reached the model as an empty string. The parser now converts HTML
+to text and also keeps each link's href *and* its visible text, because "the
+text says paypal.com but the link goes to paypa1-secure.com" is one of the
+strongest signals there is, and it disappears once you flatten HTML to text.
+*Code: `parsing.py`*
+
+### "What signals do you use besides the text?"
+A body-text model can't see most of the strongest evidence. So there are
+rules for:
+- DMARC, SPF and DKIM failures, trusting only the authentication header our
+  own mail server added, because attackers can add a fake one;
+- a Reply-To that goes to a different domain;
+- a display name that contains a different email address;
+- links whose visible text and real destination differ;
+- lookalike domains such as `paypa1` or `paypal-secure`;
+- links to bare IP addresses;
+- risky attachments such as `invoice.pdf.exe`.
+
+These are combined with the model score using noisy-OR, so every verdict
+comes with its reasons. Its weakness is that it double-counts correlated
+signals, so with labelled data I'd replace it with a fitted, calibrated model.
+*Code: `scoring/rules.py`, `scoring/combine.py`*
+
+### "How do you know it works?"
+Honestly, the PoC didn't: ground truth was attached to the synthetic emails
+but never compared with the output. Now there's an evaluation that reports
+precision, recall and false-positive rate at each threshold. Synthetic data
+only proves the pipeline runs, because the test emails and the rules were
+written by the same person. Real numbers need held-out labelled mail from
+the organisation, re-measured over time because phishing changes.
+*Code: `evaluate.py`*
+
+### "Why use a GPU at this volume?"
+For one company you may not need one. 10,000 employees is around a million
+emails a day, about 12 a second on average and maybe 100 at peak, and BERT
+on CPU with ONNX Runtime can plausibly handle that. A GPU with Triton earns
+its cost at email-security-vendor volume, with bigger models, or when the
+GPU is shared with other models. The model sits behind one interface, so
+switching between GPU and CPU is a configuration choice. *(Back this up with
+your own benchmark: CPU vs GPU throughput for your model.)*
+*Code: `scoring/text_model.py`*
+
+### "What would you alert on?"
+The PoC only counted detections. I'd alert on: end-to-end latency, to catch
+the pipeline falling behind; consumer lag; batch retries and DLQ growth,
+which show quiet failures; and the quarantine rate compared with the same
+time last week. A sudden jump there is either an attack wave or a broken
+model, and both need a person.
+*Code: `metrics.py`, `deploy/alerts.yml`*
+
+### "What about privacy?"
+Email bodies are sensitive, regulated data in a bank. That means:
+- encryption in transit and at rest;
+- per-service access control on topics, so ingest can only write and the
+  worker can only read what it needs;
+- retention set by policy, not by default;
+- raw emails in access-logged storage;
+- logs that contain only IDs and metadata, never email bodies.
+
+*Code: DESIGN §11*
 
 ## What the evaluation numbers do and don't mean
 
