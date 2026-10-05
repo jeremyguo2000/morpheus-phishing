@@ -1,0 +1,16 @@
+Authentication-Results: mx.example-corp.com; spf=fail smtp.mailfrom=paypa1-secure.com;
+ dkim=none; dmarc=fail header.from=paypa1-secure.com
+From: "PayPal Service" <service@paypa1-secure.com>
+Reply-To: help@collect-desk.ru
+To: alice@example-corp.com
+Subject: Your account has been limited
+Date: Mon, 05 Oct 2026 09:12:00 +0800
+Message-ID: <abc123@paypa1-secure.com>
+MIME-Version: 1.0
+Content-Type: text/html; charset="utf-8"
+
+<html><head><style>p{color:red}</style><script>var x=1;</script></head><body>
+<p>Dear customer,</p>
+<p>Please <a href="http://paypa1-secure.com/login?session=8a7f">https://www.paypal.com/signin</a> to restore access.</p>
+<p>Or visit <a href="http://203.0.113.9/r">our help centre</a>.</p>
+</body></html>

@@ -1,0 +1,21 @@
+Authentication-Results: mx.example-corp.com; spf=pass smtp.mailfrom=example-corp.com;
+ dkim=pass header.d=example-corp.com; dkim=fail header.d=old-relay.example; dmarc=pass header.from=example-corp.com
+From: Daniel Lim <daniel@example-corp.com>
+To: "Smith, John" <john.smith@example-corp.com>, Mei Chen <mei@example-corp.com>
+Cc: "Tan, Wei Ling" <weiling@example-corp.com>
+Subject: =?utf-8?q?Q3_planning_=E2=80=93_notes?=
+Date: Mon, 05 Oct 2026 10:00:00 +0800
+Message-ID: <q3-notes-1@example-corp.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset="utf-8"
+
+Notes are at https://docs.example-corp.com/q3 - shout if anything is missing.
+
+--b1
+Content-Type: text/html; charset="utf-8"
+
+<p>Notes are at <a href="https://docs.example-corp.com/q3">docs.example-corp.com/q3</a> - shout if anything is missing.</p>
+--b1--

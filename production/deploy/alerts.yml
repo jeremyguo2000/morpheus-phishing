@@ -1,0 +1,33 @@
+# Alerts that would page someone. Consumer lag needs a Kafka exporter
+# (e.g. danielqsj/kafka-exporter); the rest come from the worker's own metrics.
+groups:
+  - name: phishguard
+    rules:
+      - alert: PhishguardNotKeepingUp
+        expr: histogram_quantile(0.95, sum by (le) (rate(phishguard_end_to_end_seconds_bucket[10m]))) > 60
+        for: 10m
+        annotations: { summary: "p95 ingest-to-verdict latency above 60s" }
+
+      - alert: PhishguardConsumerLag
+        expr: sum(kafka_consumergroup_lag{consumergroup="phishguard-scorer"}) > 5000
+        for: 10m
+        annotations: { summary: "scorer is falling behind the inbound topic" }
+
+      - alert: PhishguardRetryingBatches
+        expr: sum(rate(phishguard_batch_retries_total[5m])) > 0
+        for: 5m
+        annotations: { summary: "batches are being rewound (model serving or Kafka produce failing)" }
+
+      - alert: PhishguardDeadLetters
+        expr: sum(increase(phishguard_dlq_total[15m])) > 10
+        annotations: { summary: "records landing in the DLQ; check for a parser bug or a bad producer" }
+
+      - alert: PhishguardScoreShift
+        # Fraction of mail quarantined, compared with the same hour last week. A big jump is
+        # either an attack wave or a broken model: both need a human.
+        expr: |
+          (sum(rate(phishguard_verdicts_total{action="quarantine"}[1h])) / sum(rate(phishguard_verdicts_total[1h])))
+          > 3 * (sum(rate(phishguard_verdicts_total{action="quarantine"}[1h] offset 1w))
+                 / sum(rate(phishguard_verdicts_total[1h] offset 1w)))
+        for: 30m
+        annotations: { summary: "quarantine rate is 3x last week's" }
